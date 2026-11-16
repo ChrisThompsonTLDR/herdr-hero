@@ -1,0 +1,57 @@
+name: Mirror to GitHub
+
+# Gitea is canonical. github.com/ChrisThompsonTLDR/herdr-hero is a read-only mirror: every push to main
+# and every new tag is pushed there, without --force, so a GitHub main that has commits Gitea lacks fails this job
+# instead of being overwritten. The credential is a write deploy key on that one GitHub repo, stored as the org
+# Actions secret MIRROR_KEY_HERDR_HERO. GitHub never runs a file in .gitea/, so the mirror cannot loop.
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+
+concurrency:
+  group: mirror-github
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Push to the GitHub mirror
+    runs-on: fast
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push the ref and read it back
+        env:
+          MIRROR_KEY: ${{ secrets.MIRROR_KEY_HERDR_HERO }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MIRROR_KEY}" ]; then
+            echo "::error::Actions secret MIRROR_KEY_HERDR_HERO is missing or empty"
+            exit 1
+          fi
+          keydir="$(mktemp -d)"
+          trap 'rm -rf "${keydir}"' EXIT
+          printf '%s\n' "${MIRROR_KEY}" > "${keydir}/key"
+          chmod 600 "${keydir}/key"
+          # GitHub's published ED25519 host key (gh api meta --jq .ssh_keys), served on ssh.github.com:443 too.
+          echo '[ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "${keydir}/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i ${keydir}/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${keydir}/known_hosts"
+          remote='ssh://git@ssh.github.com:443/ChrisThompsonTLDR/herdr-hero.git'
+          case "${REF}" in
+            refs/heads/main) src="${SHA}"; want="${SHA}" ;;
+            refs/tags/*) src="${REF}"; want="$(git rev-parse "${REF}")" ;;
+            *) echo "::error::unexpected ref ${REF}"; exit 1 ;;
+          esac
+          git push "${remote}" "${src}:${REF}"
+          mirrored="$(git ls-remote --refs "${remote}" "${REF}" | cut -f1)"
+          if [ "${mirrored}" != "${want}" ]; then
+            echo "::error::GitHub ${REF} is '${mirrored}', expected ${want}"
+            exit 1
+          fi
+          echo "GitHub ${REF} = ${want}"
