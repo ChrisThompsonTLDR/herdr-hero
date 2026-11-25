@@ -1,0 +1,7 @@
+name: release-gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+jobs:
+  gate:
+    uses: orum/ai-agents/.gitea/workflows/reusable-release-gate.yml@main
